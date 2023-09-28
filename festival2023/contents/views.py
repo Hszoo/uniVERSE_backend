@@ -1,14 +1,12 @@
 from django.contrib import admin
 from .models import College, Student, Booth, Book
-
-from .serializers import StudentSerializer, CollegeSerializer,BookSerializer
+from .serializers import StudentSerializer, CollegeSerializer, BookSerializer, BoothSearchSerializer, BoothSerializer, BoothDetailSerailizer
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .serializers import BoothSearchSerializer
-
 from rest_framework import generics, filters, status
 from rest_framework.pagination import PageNumberPagination
 from datetime import datetime
+from django.db.models import Q 
 
 # 단과대항전 학생 정보 입력하는 view
 class StudentInfoView(APIView):
@@ -28,9 +26,10 @@ class StudentInfoView(APIView):
             
             # 학생 정보가 추가된 후에 참여율 순위를 업데이트
             colleges = College.objects.all()
+
             college_data = []
             for college in colleges:
-                participation_rate = self.calculate_participation_rate(college) * 100
+                participation_rate = round(self.calculate_participation_rate(college), 2)
                 college_data.append({
                     'college': college.college,
                     'participation_rate': participation_rate,
@@ -72,16 +71,40 @@ class CollegeRankListView(APIView):
         # 단과대학별 참여율을 계산하여 반환
         colleges = College.objects.all()
         college_data = []
-        for college in colleges:
-            participation_rate = self.calculate_participation_rate(college)
+
+        # 참여율이 0%인 대학만 가져오기
+        zeroColleges = colleges.filter(total=0)
+
+        # 모든 대학의 참여율이 0%일때 -> 초기상태
+        if zeroColleges.exists():
+            zeroColleges = zeroColleges.order_by('college')
+        else:
+            colleges = colleges.order_by('college')
+
+        for college in zeroColleges:
+            participation_rate = round(self.calculate_participation_rate(college), 2)
             college_data.append({
                 'college': college.college,
                 'participation_rate': participation_rate,
             })
 
-        # 참여율을 기준으로 내림차순으로 정렬
-        college_data.sort(key=lambda x: x['participation_rate'], reverse=True)
-        
+        # 나머지 대학들의 참여율을 기준으로 내림차순으로 정렬
+        participation_colleges = colleges.exclude(total=0)
+        participation_data = []
+        for college in participation_colleges:
+            participation_rate = round(self.calculate_participation_rate(college), 2)
+            participation_data.append({
+                'college': college.college,
+                'participation_rate': participation_rate,
+            })
+
+        # 참여율로 내림차순정렬
+        participation_data.sort(key=lambda x: x['participation_rate'], reverse=True)
+
+        # 데이터를(zero, 아닌거)모든 데이터 합치기
+        college_data.extend(participation_data)
+
+
         # 순위를 계산하고 추가
         rank = 1
         prev_rate = None
@@ -107,27 +130,30 @@ class CollegeRankListView(APIView):
 
         return participation_rate
 
-# 소은 - 검색 기능 
+# 검색
 class BoothSearchView(generics.ListAPIView):
     serializer_class = BoothSearchSerializer
     filter_backends = [filters.SearchFilter]
-    search_fields = ['name']
+    search_fields = ['name', 'category']
 
     pagination_class = PageNumberPagination
 
     def get_queryset(self):
         search_term = self.request.query_params.get('name')
+        category_term = self.request.query_params.get('category')
+
+        queryset = Booth.objects.all()
+
         if search_term:
-            queryset = Booth.objects.filter(name__icontains=search_term)
-        else:
-            queryset = Booth.objects.all()
+            if not category_term:
+                category_term = 'day1'
+            queryset = queryset.filter(Q(name__icontains=search_term) & Q(category=category_term))
+
         return queryset
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
-        search_term = self.request.query_params.get('name')
-        if search_term:
-            queryset = queryset.filter(name__icontains=search_term)
+        
         results_count = queryset.count()  # 검색 결과 수 계산
 
         if results_count == 0:
@@ -136,8 +162,13 @@ class BoothSearchView(generics.ListAPIView):
         serialized_data = []  # 검색결과 직렬화
         for booth in queryset:
             serialized_data.append({
+                'booth_id': booth.booth_id,
                 'name': booth.name,
-                'introduce': booth.introduce
+                'category': booth.category,
+                'date': booth.date,
+                'place': booth.place,
+                'introduce': booth.introduce,
+                'image': booth.image.url #postMan에서만 주석처리
             })
 
         data = {
@@ -147,7 +178,7 @@ class BoothSearchView(generics.ListAPIView):
         return Response(data)
     
 #방명록 생성
-class GuestBookCreateView(APIView):
+class GuestBookView(APIView):
     def post(self, request):
         serializer = BookSerializer(data=request.data)
         #micro 초 단위
@@ -156,11 +187,39 @@ class GuestBookCreateView(APIView):
 
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data)       
-
-#방명록 목록
-class GuestBookListView(APIView):
+            return Response(serializer.data, status=status.HTTP_200_OK)       
+        
     def get(self, request):
         books = Book.objects.all()
         serializer = BookSerializer(books, many=True)
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+# 부스배치도 목록 
+# day01
+class BoothDay1ListView(APIView) :
+    def get(self, request) : 
+        booth1 = Booth.objects.filter(category='day1')
+        serializer = BoothDetailSerailizer(booth1, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+# day02
+class BoothDay2ListView(APIView) :
+    def get(self, request) : 
+        booth2 = Booth.objects.filter(category='day2')
+        serializer = BoothDetailSerailizer(booth2, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+# day03
+class BoothDay3ListView(APIView) :
+    def get(self, request) : 
+        booth3 = Booth.objects.filter(category='day3')
+        serializer = BoothDetailSerailizer(booth3, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+# 부스배치도 상세페이지 - 성주 
+class BoothDetailView(APIView) :
+    def get(self, request, booth_id) :
+        booth = Booth.objects.get(pk=booth_id)
+        serailizer = BoothDetailSerailizer(booth)
+        return Response(serailizer.data, status=status.HTTP_200_OK)
+
